@@ -1,11 +1,39 @@
-# Python Trading Automation System
+# TradingView → Flask → Coinbase Automation Server
 
-This project receives TradingView webhook alerts using Flask
-and executes automated trades through the OKX / 3Commas REST API.
+This project exposes a Flask server that:
+
+- Receives webhook alerts from TradingView
+- Logs data into InfluxDB
+- Calculates indicators (RSI, Bollinger Bands, ATR, Supertrend)
+- Optionally sends limit orders to Coinbase (demo mode by default)
 
 ## Features
-- Flask server for webhook handling
-- JSON parsing & validation
-- Order execution (market / limit)
-- API authentication
-- Logging & retry logic
+
+- `/webhook` – receives TradingView alerts (with optional secret token)
+- `/wallet` – fetches account information from Coinbase (requires API key)
+- `/trade` – places limit orders (disabled when `DEMO_MODE=true`)
+- `/update_strategies` – recalculates indicators from InfluxDB data
+
+## Tech Stack
+
+- Python, Flask
+- InfluxDB
+- Pandas, NumPy
+- REST APIs (Coinbase)
+- TradingView Webhooks
+
+## Environment Variables
+
+See `.env.example`:
+
+- `INFLUXDB_HOST`, `INFLUXDB_PORT`, `INFLUXDB_DATABASE`
+- `COINBASE_API_KEY`, `COINBASE_API_SECRET`
+- `WEBHOOK_TOKEN`
+- `DEMO_MODE`
+
+## Run locally
+
+```bash
+pip install -r requirements.txt
+export FLASK_APP=server.py
+python server.py
