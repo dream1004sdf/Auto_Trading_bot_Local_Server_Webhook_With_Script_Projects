@@ -1,0 +1,508 @@
+//@version=6
+strategy("Ultimate SuperTrend Pro (15m, OKX, Full Filters, TTP)", overlay=true, format=format.price, precision=2, margin_long=100, margin_short=100)
+
+// ================ INPUTS ================
+
+startYear  = input.int(2025, "Start Year", group="Trading Start Filter")
+startMonth = input.int(5, "Start Month", group="Trading Start Filter")
+startDay   = input.int(4, "Start Day", group="Trading Start Filter")
+startHour  = input.int(0, "Start Hour", group="Trading Start Filter")
+startMinute= input.int(0, "Start Minute", group="Trading Start Filter")
+
+startTimestamp = timestamp("UTC", startYear, startMonth, startDay, startHour, startMinute)
+canTradeNow = time >= startTimestamp
+
+stGroup = "SuperTrend Settings"
+atrLength = input.int(14, "ATR Length", minval=1, group=stGroup)
+atrMultiplier = input.float(2.5, "ATR Multiplier", minval=0.1, maxval=10, step=0.1, group=stGroup)
+src = input.source(hl2, "Source", group=stGroup)
+useCloseForBreakouts = input.bool(true, "Use Close for Breakouts?", group=stGroup)
+
+visGroup = "Visual Settings"
+showCloud = input.bool(true, "Show Trend Cloud?", group=visGroup)
+cloudOpacity = input.int(70, "Cloud Opacity", minval=10, maxval=90, group=visGroup)
+showSignals = input.bool(true, "Show Entry Signals?", group=visGroup)
+showPB = input.bool(true, "Show Profit Targets?", group=visGroup)
+minimalView = input.bool(false, "Minimal Dashboard View?", group=visGroup)
+
+pbGroup = "Profit Targets"
+pbRatio1 = input.float(0.7, "1st Target (ATR Multiplier)", minval=0.5, maxval=10, step=0.1, group=pbGroup)
+pbRatio2 = input.float(1.5, "2nd Target (ATR Multiplier)", minval=0.5, maxval=10, step=0.1, group=pbGroup)
+pbColor = input.color(color.new(#00BFFF, 0), "Target Color", group=pbGroup)
+useTrailingTP = input.bool(true, "Use Trailing Take-Profit (after PB1)?", group=pbGroup)
+trailingTP_ATR = input.float(1.5, "Trailing TP Offset (ATR)", minval=0.5, maxval=5.0, step=0.1, group=pbGroup)
+
+rmGroup = "Risk Management"
+useSL = input.bool(true, "Use Stop Loss?", group=rmGroup)
+slMultiplier = input.float(1.0, "SL ATR Multiplier", minval=0.5, maxval=3, group=rmGroup)
+useTrailing = input.bool(false, "Use Trailing SL?", group=rmGroup)
+trailOffset = input.float(0.5, "Trail Offset (ATR)", minval=0.1, maxval=2, group=rmGroup)
+
+filterGroup = "Filter Settings"
+useTrendFilter = input.bool(true, "Use EMA Trend Filter", group=filterGroup)
+useVolatilityFilter = input.bool(true, "Use ATR Volatility Filter", group=filterGroup)
+
+sessionGroup = "Trading Session Filter"
+useSessionFilter = input.bool(true, "Use Time Filter (UTC)", group=sessionGroup)
+filterHourStart = input.int(2, "Start Hour (UTC)", minval=0, maxval=23, group=sessionGroup)
+filterHourEnd   = input.int(22, "End Hour (UTC)", minval=0, maxval=23, group=sessionGroup)
+
+riskGroup = "Dynamic Position Sizing"
+useRiskSizing = input.bool(true, "Use Risk-Based Position Sizing?", group=riskGroup)
+accountEquity = input.float(40, "Account Size (USDT)", step=100, group=riskGroup)
+riskPercent = input.float(1.0, "Risk % per Trade", minval=0.1, maxval=5, step=0.1, group=riskGroup)
+
+feeGroup = "Fees & Slippage Settings"
+takerFeePct = 0.05
+slippagePct = 0.05
+
+alertGroup = "Alert Settings"
+alertEntry = input.bool(true, "Alert on Entry?", group=alertGroup)
+alertExit = input.bool(true, "Alert on Exit?", group=alertGroup)
+alertPB = input.bool(true, "Alert on Profit Target?", group=alertGroup)
+
+useAOFilter = input.bool(true, "Use Awesome Oscillator Filter?", group=filterGroup)
+useVolumeFilter = input.bool(true, "Use Volume Spike Filter?", group=filterGroup)
+useAdxFilter = input.bool(true, "Use ADX Trend Filter?", group=filterGroup)
+useStrictBearDiv = input.bool(true, "Use Strict Bear Divergence Filters", group="AO Divergence")
+enableLongs = input.bool(true, "Enable Long Trades?", group="Strategy Controls")
+
+// === Short Entry and AO Fade Exit Tracking ===
+var bool inShort = false
+var bool inLong = false
+var int entryBar = na
+var int exitBar = na
+
+// ================ CALCULATIONS ================
+atr = ta.atr(atrLength)
+emaFilter = ta.ema(close, 50)
+atrAvg = ta.sma(atr, 50)
+inSession = not useSessionFilter or (hour >= filterHourStart and hour <= filterHourEnd)
+volSMA = ta.sma(volume, 20)
+volumeSpike = volume > 2 * volSMA
+
+// === Manual ADX Calculation ===
+length = 14
+
+tr = math.max(math.max(high - low, math.abs(high - close[1])), math.abs(low - close[1]))
+upMove = high - high[1]
+downMove = low[1] - low
+plusDM = (upMove > downMove and upMove > 0) ? upMove : 0
+minusDM = (downMove > upMove and downMove > 0) ? downMove : 0
+
+smoothedTR = ta.rma(tr, length)
+smoothedPlusDM = ta.rma(plusDM, length)
+smoothedMinusDM = ta.rma(minusDM, length)
+
+plusDI = 100 * (smoothedPlusDM / smoothedTR)
+minusDI = 100 * (smoothedMinusDM / smoothedTR)
+
+dx = 100 * math.abs(plusDI - minusDI) / (plusDI + minusDI)
+adx = ta.rma(dx, length)
+adxOK = not useAdxFilter or adx > 20
+
+// === Confirmation Candle Filter ===
+confirmCandle = close < open and close < ta.ema(close, 5)
+
+// === Enhanced Entry Filters ===
+volumeOK = volume > ta.sma(volume, 20) * 1.1
+atrHigh = atr > atrAvg * 0.45
+trendStrengthOK = adx > 14 and close < emaFilter *1.05
+
+// === AO Divergence Inputs ===
+aoThreshold         = input.float(0.0001, "Min AO Slope Diff", step=0.0001, group="AO Divergence")
+useConfirmation     = input.bool(true, "Require Confirmation Candle?", group="AO Divergence")
+useADXForDivergence = input.bool(true, "Use ADX Filter in Divergence?", group="AO Divergence")
+adxThreshold        = input.float(19, "ADX Threshold", step=1, group="AO Divergence")
+forceShowDiv        = input.bool(false, "Force Show Divergence (Debug)?", group="AO Divergence")
+// === Store Last Valid Swing AO & Price ===
+var float lastSwingLowPrice  = na
+var float lastSwingLowAO     = na
+var float lastSwingHighPrice = na
+var float lastSwingHighAO    = na
+
+// === AO Calculation ===
+ao = ta.sma(hl2, 5) - ta.sma(hl2, 34)
+
+aoMinThreshold = input.float(0.0002, "AO Min Threshold", group="AO Divergence")
+
+// === Pivot Detection ===
+isSwingLow  = low[1] < low and low[1] < low[2]
+isSwingHigh = high[1] > high and high[1] > high[2]
+
+
+
+if isSwingHigh and not na(ao[1])
+    lastSwingHighAO    := ao[1]
+    lastSwingHighPrice := high[1]
+
+if isSwingLow and not na(ao[1])
+    lastSwingLowAO     := ao[1]
+    lastSwingLowPrice  := low[1]
+
+// === AO Direction Check (Filtered for Strength) ===
+aoDirectionBull = ao > lastSwingLowAO and math.abs(ao - lastSwingLowAO) > aoMinThreshold and math.abs(ao) > aoMinThreshold and math.abs(lastSwingLowAO) > aoMinThreshold
+aoDirectionBear = ao < lastSwingHighAO and math.abs(ao - lastSwingHighAO) > aoMinThreshold and math.abs(ao) > aoMinThreshold and math.abs(lastSwingHighAO) > aoMinThreshold
+
+// === Filters and Components ===
+validADX = not useADXForDivergence or adx > (adxThreshold - 5)
+aoSlopeBull = ao > lastSwingLowAO and math.abs(ao - lastSwingLowAO) > aoMinThreshold
+aoSlopeBear = ao < lastSwingHighAO and math.abs(ao - lastSwingHighAO) > aoMinThreshold
+
+var int lastAOCheckBar = na
+aoCheckCooldown = input.int(10, "AO Debug Cooldown", group="AO Divergence")
+
+var int lastBullDivBar = na
+bullCooldownBars = input.int(10, "Bull Div Cooldown", group="AO Divergence")
+
+trendDown = close < emaFilter and adx > adxThreshold
+
+confirmBull = close > open
+
+cond1b = isSwingLow
+cond2b = not na(lastSwingLowAO) and ao > lastSwingLowAO
+cond3b = math.abs(ao - lastSwingLowAO) > aoMinThreshold
+cond4b = not trendDown
+cond5b = confirmBull
+cond6b = validADX
+
+bullDivReady = cond1b and cond2b and cond3b and cond4b and cond6b and cond5b
+
+bullDiv = forceShowDiv or bullDivReady
+
+if bullDivReady
+    lastBullDivBar := bar_index
+
+
+var int lastBearDivBar = na
+bearCooldownBars = input.int(10, "Bear Div Cooldown", group="AO Divergence")
+
+trendUp = close > emaFilter and adx > adxThreshold
+confirmBear = close < open
+
+cond1 = isSwingHigh
+cond2 = not na(lastSwingHighAO) and ao < lastSwingHighAO
+cond3 = math.abs(ao - lastSwingHighAO) > aoMinThreshold
+cond4 = not trendUp
+cond5 = confirmBear
+cond6 = validADX
+
+upperBand = src - atrMultiplier * atr
+lowerBand = src + atrMultiplier * atr
+prevUpper = nz(upperBand[1], upperBand)
+prevLower = nz(lowerBand[1], lowerBand)
+
+var int trend = na
+trend := trend == -1 and (useCloseForBreakouts ? close : high) > prevLower ? 1 :
+         trend == 1 and (useCloseForBreakouts ? close : low) < prevUpper ? -1 :
+         nz(trend, 1)
+
+var bool bearDivTriggered = false
+
+// Reset on uptrend
+if trend == 1
+    bearDivTriggered := false
+
+// Strict (full filters)
+bearDivStrict = cond1 and cond2 and cond3 and cond4 and cond5 and cond6
+
+
+// Delay flag set by one bar
+if bearDivStrict and not bearDivTriggered
+    bearDivTriggered := true
+
+// Basic (relaxed)
+bearDivBasic = isSwingHigh and ao < lastSwingHighAO
+
+// Choose based on toggle
+bearDivReady = useStrictBearDiv ? bearDivStrict : bearDivBasic
+
+
+hasAOHistory = not na(lastSwingHighAO)
+
+
+if bearDivReady
+    bearDivTriggered := true
+recentBearDiv = not na(lastBearDivBar) and (bar_index - lastBearDivBar <= bearCooldownBars)
+bearDiv = forceShowDiv or bearDivReady
+
+if bearDivReady
+    lastBearDivBar := bar_index
+
+if bullDivReady
+    lastBullDivBar := bar_index
+
+var bool bullDivTriggered = false
+if bullDivReady and not bullDivTriggered
+    bullDivTriggered := true
+
+recentBullDiv = not na(lastBullDivBar) and (bar_index - lastBullDivBar <= bullCooldownBars)
+
+
+longTrendOK = not useTrendFilter or close > emaFilter
+shortTrendOK = not useTrendFilter or close < emaFilter
+volatilityOK = not useVolatilityFilter or atr > atrAvg
+
+notOversold = close > emaFilter * 0.97
+notOverbought = close < emaFilter * 1.03
+
+
+upperBand := (useCloseForBreakouts ? close : high)[1] > prevUpper ? math.max(upperBand, prevUpper) : upperBand
+lowerBand := (useCloseForBreakouts ? close : low)[1] < prevLower ? math.min(lowerBand, prevLower) : lowerBand
+
+feeMultiplier = 1 - (takerFeePct / 100)
+slip = close * (slippagePct / 100)
+entryPriceLong = close + slip
+entryPriceShort = close - slip
+
+riskPerTrade = (accountEquity * riskPercent) / 100
+slDistance = atr * slMultiplier
+positionSize = slDistance > 0 ? (riskPerTrade / slDistance) : 1
+qty = useRiskSizing ? positionSize : 1
+
+aoBullishOK = not useAOFilter or bullDiv or recentBullDiv
+aoBearishOK = not useAOFilter or bearDiv or recentBearDiv
+
+// === Dynamic Market Regime Detection ===
+atrShort = ta.sma(ta.tr(true), 14)
+priceRange = ta.highest(high, 30) - ta.lowest(low, 30)
+volatilityRatio = atrShort / priceRange
+
+volatilityThreshold = input.float(0.19, "Low-Volatility Threshold", minval=0.1, maxval=1.0, step=0.01)
+isLowVolatility = volatilityRatio < volatilityThreshold
+
+longCondition = enableLongs and trend == 1 and longTrendOK and volatilityOK and volumeOK and inSession and aoBullishOK and bullDivReady and confirmBull and trendStrengthOK and notOverbought and not bullDivTriggered
+shortCondition = trend == -1 and shortTrendOK and volatilityOK and volumeOK and inSession and aoBearishOK and bearDivStrict and notOversold and not bearDivTriggered  // Only enter near divergence trigger
+
+longContinuation = trend == 1 and longTrendOK and volatilityOK and volumeOK and inSession and aoBullishOK and recentBullDiv and notOverbought
+shortContinuation = trend == -1 and shortTrendOK and volatilityOK and volumeOK and inSession and aoBearishOK and recentBearDiv and notOversold
+
+var float entryPrice = na
+
+
+// Market entry on bearDivStrict
+entryConditionbear = bearDivStrict and trendStrengthOK and confirmCandle and volumeOK and atrHigh and strategy.position_size == 0 and inSession
+entryConditionbull = bullDivReady and trendStrengthOK and confirmBull and volumeOK and atrHigh and strategy.position_size == 0 and inSession
+
+entryConditionbull := bullDivReady and trendStrengthOK and confirmBull and volumeOK and atrHigh and strategy.position_size == 0 and inSession and canTradeNow
+entryConditionbear := bearDivStrict and trendStrengthOK and confirmCandle and volumeOK and atrHigh and strategy.position_size == 0 and inSession and canTradeNow
+
+
+if entryConditionbear
+    strategy.entry("Short BearDiv", strategy.short, qty=qty)
+    inShort := true
+    entryBar := bar_index
+
+if entryConditionbull
+    strategy.entry("Long BullDiv", strategy.long, qty=qty)
+    inLong := true
+    entryBar := bar_index
+
+shortExitAO = strategy.position_size < 0 and ao > ao[1] and ao < 0
+shortExitSL = strategy.closedtrades > 0 and strategy.position_size == 0
+
+longExitAO = strategy.position_size > 0 and ao < ao[1] and ao > 0
+longExitSL = strategy.closedtrades > 0 and strategy.position_size == 0
+
+// === Early Exit on Trend Reversal ===
+if trend == -1 and strategy.position_size > 0
+    strategy.close("Long", comment="Trend Reversed")
+if trend == 1 and strategy.position_size < 0
+    strategy.close("Short", comment="Trend Reversed")
+
+float pbPrice1 = na
+float pbPrice2 = na
+if trend == 1 and trend[1] != 1
+    pbPrice1 := entryPriceLong + (atr * pbRatio1 * feeMultiplier) + slip
+    pbPrice2 := entryPriceLong + (atr * pbRatio2 * feeMultiplier) + slip
+if trend == -1 and trend[1] != -1
+    pbPrice1 := entryPriceShort - (atr * pbRatio1 * feeMultiplier) - slip
+    pbPrice2 := entryPriceShort - (atr * pbRatio2 * feeMultiplier) - slip
+
+// ================ STOP LOSS & TRAILING SL ================
+if strategy.position_size > 0
+    if useTrailing
+        strategy.exit("Long Exit Trail", from_entry="Long", trail_points=atr * trailOffset, trail_offset=atr * trailOffset)
+    else if useSL
+        slLong = entryPrice - atr * slMultiplier
+        strategy.exit("Long Exit SL", from_entry="Long", stop=slLong)
+
+if strategy.position_size < 0
+    if useTrailing
+        strategy.exit("Short Exit Trail", from_entry="Short", trail_points=atr * trailOffset, trail_offset=atr * trailOffset)
+    else if useSL
+        slShort = entryPrice + atr * slMultiplier
+        strategy.exit("Short Exit SL", from_entry="Short", stop=slShort)
+
+// Exit on AO fade
+fadeThreshold = input.float(0.00005, "AO Fade Sensitivity", step=0.00001)
+aoFadeBear = ao > ao[1] and ao[1] > ao[2] and close > open and ao > -8
+if strategy.position_size < 0 and aoFadeBear
+    strategy.close("Short BearDiv", comment="AO Fading[Bear]")
+    exitBar := bar_index
+    inShort := false
+
+aoFadeBull = ao < ao[1] and ao[1] < ao[2] and close < open and ao < 8
+if strategy.position_size > 0 and aoFadeBull
+    strategy.close("Long BullDiv", comment="AO Fading[Bull]")
+    exitBar := bar_index
+    inLong := false
+
+if strategy.position_size > 0 and useSL
+    slLong = entryPrice - atr * slMultiplier
+    strategy.exit("SL", from_entry="Long BullDiv", stop=slLong)
+
+if strategy.position_size < 0 and useSL
+    slShort = entryPrice + atr * slMultiplier
+    strategy.exit("SL", from_entry="Short BearDiv", stop=slShort)
+
+// Emergency reset if position closed by other means
+if strategy.opentrades == 0 and bar_index != entryBar
+    inShort := false
+// ================ PROFIT TARGET & TRAILING TP ================
+
+// --- Hit flags for trailing/breakeven
+var bool pb1HitShort = false
+var bool pb1HitLong  = false
+
+// === SHORT TRADE MANAGEMENT
+if strategy.position_size < 0
+    // --- PB1
+    if not pb1HitShort and low <= pbPrice1
+        strategy.exit("PB1", from_entry="Short", qty_percent=50, limit=pbPrice1)
+        pb1HitShort := true
+
+    // --- PB2 with trailing or fixed
+    if high >= pbPrice2
+        if useTrailingTP
+            strategy.exit("TTP", from_entry="Short", qty_percent=100, trail_points=atr * trailingTP_ATR, trail_offset=atr * trailingTP_ATR)
+        else
+            strategy.exit("PB2", from_entry="Short", qty_percent=100, limit=pbPrice2)
+
+    // --- Breakeven SL after PB1
+    if pb1HitShort
+        breakevenShort = entryPriceShort - slip
+        strategy.exit("BE Stop", from_entry="Short BearDiv", stop=breakevenShort)
+
+    // --- AO reversal exit
+    aoReversalShort = ao > ao[1] and ao > 0
+    if aoReversalShort
+        strategy.close("Short BearDiv", comment="AO Reversal Exit")
+
+// === LONG TRADE MANAGEMENT
+if strategy.position_size > 0
+    // --- PB1
+    if not pb1HitLong and high >= pbPrice1
+        strategy.exit("PB1", from_entry="Long", qty_percent=50, limit=pbPrice1)
+        pb1HitLong := true
+
+    // --- PB2 with trailing or fixed
+    if high >= pbPrice2
+        if useTrailingTP
+            strategy.exit("TTP", from_entry="Long", qty_percent=100, trail_points=atr * trailingTP_ATR, trail_offset=atr * trailingTP_ATR)
+        else
+            strategy.exit("PB2", from_entry="Long", qty_percent=100, limit=pbPrice2)
+
+    // --- Breakeven SL after PB1
+    if pb1HitLong
+        breakevenLong = entryPriceLong + slip
+        strategy.exit("BE Stop", from_entry="Long", stop=breakevenLong)
+
+    // --- AO reversal exit
+    aoReversalLong = ao < ao[1] and ao < 0
+    if aoReversalLong
+        strategy.close("Long", comment="AO Reversal Exit")
+
+// --- Reset hit flags when position closes
+if strategy.opentrades == 0
+    pb1HitShort := false
+    pb1HitLong := false
+
+// ================ VISUALS ================
+plotUpperCloud = plot(showCloud and trend == 1 ? upperBand : na, "Upper Cloud", color=color.new(color.green, 100), display=display.none)
+plotLowerCloud = plot(showCloud and trend == -1 ? lowerBand : na, "Lower Cloud", color=color.new(color.red, 100), display=display.none)
+plotUpTrend = plot(trend == 1 ? upperBand : na, "Up Trend", color=color.new(color.green, 0), linewidth=2)
+plotDnTrend = plot(trend == -1 ? lowerBand : na, "Down Trend", color=color.new(color.red, 0), linewidth=2)
+plotPB1 = plot(showPB and trend == -1 ? pbPrice1 : na, "1st Target", color=pbColor, style=plot.style_circles, linewidth=2)
+plotPB2 = plot(showPB and trend == -1 and not useTrailingTP ? pbPrice2 : na, "2nd Target", color=color.new(pbColor, 50), style=plot.style_circles, linewidth=2)
+
+buySignal = bar_index == entryBar + 1 and showSignals and strategy.position_size > 0
+sellSignal = bar_index == entryBar + 1 and showSignals and strategy.position_size < 0
+plotshape(buySignal, "Buy Signal", location=location.belowbar, color=color.green, style=shape.labelup, text="BUY", textcolor=color.white)
+plotshape(sellSignal, "Sell Signal", location=location.abovebar, color=color.red, style=shape.labeldown, text="SELL", textcolor=color.white)
+
+fill(plotUpperCloud, plotLowerCloud, color=trend == 1 ? color.new(color.green, 100-cloudOpacity) : color.new(color.red, 100-cloudOpacity), title="Trend Cloud")
+
+// ================ ALERTS ================
+if alertEntry and longCondition
+    alert("BUY SIGNAL: Entry @ " + str.tostring(close) + " | Targets: " + str.tostring(pbPrice1) + ", " + str.tostring(pbPrice2), alert.freq_once_per_bar)
+if alertEntry and bearDivStrict and inSession
+    alert("SELL SIGNAL: Entry @ " + str.tostring(close) + " | Targets: " + str.tostring(pbPrice1) + ", " + str.tostring(pbPrice2), alert.freq_once_per_bar)
+if alertPB and not na(pbPrice1) and (high >= pbPrice1 or low <= pbPrice1)
+    alert("1ST PROFIT TARGET HIT: Price = " + str.tostring(close), alert.freq_once_per_bar)
+if alertPB and not na(pbPrice2) and not useTrailingTP and (high >= pbPrice2 or low <= pbPrice2)
+    alert("FINAL PROFIT TARGET HIT: Price = " + str.tostring(close), alert.freq_once_per_bar)
+if alertExit and strategy.opentrades == 0 and strategy.opentrades[1] > 0
+    alert("POSITION CLOSED: Price = " + str.tostring(close), alert.freq_once_per_bar)
+
+showDebug = input.bool(true, "Show Divergence Debug", group="AO Divergence")
+
+//plotshape(useAOFilter and bullDiv, location=location.belowbar, color=color.lime, style=shape.triangleup, title="AO Bull Div", text="BullDiv")
+
+//plotshape(volumeOK ? na : high, location=location.abovebar, color=color.orange, title="Volume Filter Blocked")
+//plotshape(atrHigh ? na : low, location=location.belowbar, color=color.gray, title="ATR Filter Blocked")
+//plotshape(confirmCandle and not inShort ? low : na, location=location.belowbar, color=color.red, style=shape.labelup, text="Confirm", title="Confirm Candle")
+
+//plotshape(bearDivStrict ? high : na, title="Bear Div Strict", location=location.abovebar, color=color.purple, style=shape.triangledown)
+//plotshape(entryCondition ? low : na, title="ENTRY CONDITION", location=location.belowbar, color=color.red, style=shape.labelup, text="SELL")
+//plotshape(not trendStrengthOK ? high : na, title="Trend Blocked", location=location.abovebar, color=color.yellow, style=shape.xcross, size=size.small)
+//plotshape(aoFadeBear ? low : na, location=location.belowbar, style=shape.triangleup, color=color.lime, title="AO Fade Early Exit")
+
+//plotshape(forceShowDiv, title="Test Marker", location=location.belowbar, color=color.orange)
+
+
+// === Plot Entry/Exit Markers for Short ===
+// === Short Entry/Exit Plots ===
+//plotshape(bar_index == entryBar, title="Short Entry", location=location.abovebar, style=shape.flag, color=color.red, text="Short", size=size.small)
+//plotshape(bar_index == exitBar, title="Short Exit", location=location.belowbar, style=shape.xcross, color=color.green, text="Exit", size=size.small)
+//plotshape(shortExitSL, title="Short Exit (SL or Trail)", location=location.belowbar, color=color.orange, style=shape.xcross, text="SL/Trail", size=size.small)
+
+
+
+
+
+// === Debug for Bullish Divergence ===
+//plotshape(showDebug and not trendDown and close < lastSwingLowPrice, location=location.belowbar, color=color.navy, title="Bull: Price below swing")
+//plotshape(showDebug and not trendDown and ao > lastSwingLowAO, location=location.belowbar, color=color.orange, title="Bull: AO above last")
+//plotshape(showDebug and not trendDown and aoSlopeBull, location=location.belowbar, color=color.purple, title="Bull: AO Slope OK")
+//plotshape(showDebug and not trendDown and validADX, location=location.belowbar, color=color.teal, title="Bull: ADX OK")
+//plotshape(showDebug and not trendDown and confirmBull, location=location.belowbar, color=color.red, title="Bull: Confirm OK")
+
+// === Debug for Bearish Divergence ===
+//plotshape(showDebug and not trendUp and close > lastSwingHighPrice, location=location.abovebar, color=color.navy, title="Bear: Price above swing")
+//plotshape(showDebug and isSwingHigh and not na(lastSwingHighAO) and ao < lastSwingHighAO and math.abs(ao - lastSwingHighAO) > aoMinThreshold and ao < 0 and confirmBear and not trendUp, location=location.abovebar, color=color.orange, style=shape.xcross, title="Bear: AO below last swing AO (strict)")
+//plotshape(showDebug and aoSlopeBear and not trendUp, location=location.abovebar, color=color.purple, title="Bear: AO Slope OK")
+//plotshape(showDebug and not trendUp and validADX, location=location.abovebar, color=color.teal, title="Bear: ADX OK")
+//plotshape(showDebug and confirmBear and trendDown and ao < 0, location=location.abovebar, color=color.red, title="Filtered Bear Confirm")
+
+//plotshape(showDebug and not na(lastSwingHighAO), location=location.top, style=shape.circle, color=color.green, title="AO High Ready")
+
+
+//plotshape(isSwingLow, location=location.abovebar, color=color.gray, style=shape.xcross, title="Cond1: isSwingLow")
+//plotshape(cond2b, location=location.abovebar, color=color.orange, title="Cond2: not na(lastSwingLowAO) and ao > lastSwingLowAO", style=shape.xcross)
+//plotshape(cond3b, location=location.abovebar, color=color.purple, title="Cond3: math.abs(ao - lastSwingLowAO) > aoMinThreshold", style=shape.xcross)
+//plotshape(cond4b, location=location.abovebar, color=color.navy, title="Cond4: not trenddown", style=shape.xcross)
+//plotshape(cond5b, location=location.abovebar, color=color.red, title="Cond5: confirmBull", style=shape.xcross)
+//plotshape(cond6b, location=location.abovebar, color=color.teal, title="Cond6: validADX", style=shape.xcross)
+
+
+//plotshape(bullDivReady, title="Bull Div Ready", location=location.top, color=color.green, style=shape.triangleup)
+//plotshape(trendStrengthOK, title="Trend Strength OK", location=location.top, color=color.blue, style=shape.triangleup)
+//plotshape(confirmBull, title="Confirm Bull", location=location.top, color=color.red, style=shape.triangleup)
+//plotshape(volumeOK, title="Volume OK", location=location.top, color=color.orange, style=shape.triangleup)
+//plotshape(atrHigh, title="ATR High", location=location.top, color=color.purple, style=shape.triangleup)
+
+//plotshape(bullDivReady, title="Bull Div Ready", location=location.belowbar, color=color.green, style=shape.triangleup)
+//plotshape(entryConditionbull, title="Bull Entry Cond", location=location.belowbar, color=color.blue, style=shape.labelup, text="BUY?")
+//label.new(bar_index, low, "AO: " + str.tostring(ao), style=label.style_label_down, color=color.green, textcolor=color.white) 
+//plotshape(isSwingLow, location=location.belowbar, color=color.green, title="Swing Low?")
