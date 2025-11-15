@@ -37,3 +37,15 @@ See `.env.example`:
 pip install -r requirements.txt
 export FLASK_APP=server.py
 python server.py
+```
+
+## Pine Script Strategies
+
+This repository also includes several Pine Script strategies used to
+generate real-time webhook alerts consumed by the Flask automation server.
+
+Example features:
+- Multi-indicator confluence (RSI, Supertrend, ATR)
+- Risk management with stop-loss and take-profit
+- Alert messages formatted for the Flask webhook endpoint
+- Supports both long and short conditions
