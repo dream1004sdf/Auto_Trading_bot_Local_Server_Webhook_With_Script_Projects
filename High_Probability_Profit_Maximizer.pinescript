@@ -1,5 +1,5 @@
 //@version=5
-indicator("High Probability Profit Maximizer", overlay=true)
+indicator("Enhanced Profit Maximizer with Refined Debugging", overlay=true)
 
 // Input parameters
 rsiPeriod = input.int(14, title="RSI Period")
@@ -13,106 +13,77 @@ macdSignalLength = input.int(9, title="MACD Signal Length")
 bbLength = input.int(20, title="BB Length")
 bbMult = input.float(2.0, title="BB Multiplier")
 
-rollingDays = input.int(14, title="Rolling Days")
-rollingData = math.min(rollingDays * 1440, 15000)  // Adjust rolling data to avoid exceeding the maximum historical limit
+rollingHours = input.int(14 * 24, title="Rolling Hours (14 Days)")
 
-trailStopEnabled = input.bool(true, title="Enable Trailing Stop")  // Add trailing stop toggle
+optimizedStopLossPercent = input.float(2.0, title="Optimized Stop Loss (%)")
+optimizedProfitTargetPercent = input.float(4.0, title="Optimized Profit Target (%)")
+optimizedTrailStopPercent = input.float(1.0, title="Optimized Trail Stop (%)")
 
-// Recalculate rolling data and metrics every bar
+// Rolling data
+rollingData = math.min(rollingHours, 15000)
 rollingHigh = ta.highest(high, rollingData)
 rollingLow = ta.lowest(low, rollingData)
 rollingRange = rollingHigh - rollingLow
 rollingVolatilityPercent = (rollingRange / close) * 100
-
-// Dynamic risk parameters
-dynamicStopLossPercent = rollingVolatilityPercent * 0.5
-dynamicProfitTargetPercent = rollingVolatilityPercent * 1.0
-dynamicTrailStopPercent = rollingVolatilityPercent * 0.25
 
 // Calculations
 rsiValue = ta.rsi(close, rsiPeriod)
 [macdLine, signalLine, _] = ta.macd(close, macdFastLength, macdSlowLength, macdSignalLength)
 upperBB = ta.sma(close, bbLength) + bbMult * ta.stdev(close, bbLength)
 lowerBB = ta.sma(close, bbLength) - bbMult * ta.stdev(close, bbLength)
-middleBB = ta.sma(close, bbLength)
 
-// Strategy rules
-enterLong = ta.crossover(macdLine, signalLine) and rsiValue < rsiOversold and close < lowerBB
-exitLong = ta.crossunder(macdLine, signalLine) or rsiValue > rsiOverbought or close > upperBB
+// Reverse strategy logic
+reverseEnterLong = ta.crossunder(macdLine, signalLine) and rsiValue > rsiOverbought and close > upperBB
+reverseExitLong = ta.crossover(macdLine, signalLine) or rsiValue < rsiOversold or close < lowerBB
 
-enterShort = ta.crossunder(macdLine, signalLine) and rsiValue > rsiOverbought and close > upperBB
-exitShort = ta.crossover(macdLine, signalLine) or rsiValue < rsiOversold or close < lowerBB
+reverseEnterShort = ta.crossover(macdLine, signalLine) and rsiValue < rsiOversold and close < lowerBB
+reverseExitShort = ta.crossunder(macdLine, signalLine) or rsiValue > rsiOverbought or close > upperBB
 
-// Apply dynamic risk percentages
-var float stopLoss = na
-var float profitTarget = na
-var float trailStop = na
+// Track signal changes
+var bool lastReverseEnterLong = na
+var bool lastReverseEnterShort = na
 
-if (enterLong)
-    stopLoss := close * (1 - (dynamicStopLossPercent / 100))
-    profitTarget := close * (1 + (dynamicProfitTargetPercent / 100))
+newReverseLong = reverseEnterLong and not lastReverseEnterLong
+newReverseShort = reverseEnterShort and not lastReverseEnterShort
 
-if (enterShort)
-    stopLoss := close * (1 + (dynamicStopLossPercent / 100))
-    profitTarget := close * (1 - (dynamicProfitTargetPercent / 100))
+lastReverseEnterLong := reverseEnterLong
+lastReverseEnterShort := reverseEnterShort
 
-if trailStopEnabled and enterLong
-    trailStop := close * (1 - (dynamicTrailStopPercent / 100))
+// Dynamic risk parameters
+var float reverseStopLoss = na
+var float reverseProfitTarget = na
+var float reverseTrailStop = na
 
-if trailStopEnabled and enterShort
-    trailStop := close * (1 + (dynamicTrailStopPercent / 100))
+if newReverseLong
+    reverseStopLoss := close * (1 - (optimizedStopLossPercent / 100))
+    reverseProfitTarget := close * (1 + (optimizedProfitTargetPercent / 100))
+    reverseTrailStop := close * (1 - (optimizedTrailStopPercent / 100))
 
-// Plot signals
-plotshape(series=enterLong, title="Enter Long", style=shape.labelup, location=location.belowbar, color=color.green, text="Buy")
-plotshape(series=exitLong, title="Exit Long", style=shape.labeldown, location=location.abovebar, color=color.red, text="Sell")
+if newReverseShort
+    reverseStopLoss := close * (1 + (optimizedStopLossPercent / 100))
+    reverseProfitTarget := close * (1 - (optimizedProfitTargetPercent / 100))
+    reverseTrailStop := close * (1 + (optimizedTrailStopPercent / 100))
 
-plotshape(series=enterShort, title="Enter Short", style=shape.labeldown, location=location.abovebar, color=color.red, text="Sell")
-plotshape(series=exitShort, title="Exit Short", style=shape.labelup, location=location.belowbar, color=color.green, text="Buy")
 
-// Plot Bollinger Bands
-plot(upperBB, title="Upper BB", color=color.blue)
-plot(lowerBB, title="Lower BB", color=color.blue)
-plot(middleBB, title="Middle BB", color=color.gray)
+// Streamlined Labels
+if newReverseLong
+    label.new(bar_index, low, text="Rev Buy", style=label.style_label_up, color=color.green)
+if reverseExitLong
+    label.new(bar_index, high, text="Rev Sell", style=label.style_label_down, color=color.red)
+
+if newReverseShort
+    label.new(bar_index, high, text="Rev Sell", style=label.style_label_down, color=color.orange)
+if reverseExitShort
+    label.new(bar_index, low, text="Rev Buy", style=label.style_label_up, color=color.purple)
 
 // Alerts
-alertcondition(enterLong, title="Enter Long Alert", message="High Probability Long Entry Detected")
-alertcondition(exitLong, title="Exit Long Alert", message="Exit Long Signal Detected")
-alertcondition(enterShort, title="Enter Short Alert", message="High Probability Short Entry Detected")
-alertcondition(exitShort, title="Exit Short Alert", message="Exit Short Signal Detected")
+alertcondition(newReverseLong, title="Reverse Enter Long Alert", message="Reverse Long Entry Detected")
+alertcondition(reverseExitLong, title="Reverse Exit Long Alert", message="Reverse Long Exit Detected")
+alertcondition(newReverseShort, title="Reverse Enter Short Alert", message="Reverse Short Entry Detected")
+alertcondition(reverseExitShort, title="Reverse Exit Short Alert", message="Reverse Short Exit Detected")
 
-if enterLong
-    alert("Enter Long: High Probability Long Entry Detected", alert.freq_once_per_bar_close)
-
-if exitLong
-    alert("Exit Long: Exit Long Signal Detected", alert.freq_once_per_bar_close)
-
-if enterShort
-    alert("Enter Short: High Probability Short Entry Detected", alert.freq_once_per_bar_close)
-
-if exitShort
-    alert("Exit Short: Exit Short Signal Detected", alert.freq_once_per_bar_close)
-
-// Log trades for backtesting
-var table tradesLog = table.new(position.top_right, 10, 4, bgcolor=color.new(color.black, 90))
-
-if (bar_index == 0)  // Initialize table headers on the first bar
-    table.cell(tradesLog, 0, 0, "Timestamp", bgcolor=color.new(color.gray, 80))
-    table.cell(tradesLog, 0, 1, "Action", bgcolor=color.new(color.gray, 80))
-    table.cell(tradesLog, 0, 2, "Price", bgcolor=color.new(color.gray, 80))
-    table.cell(tradesLog, 0, 3, "Quantity", bgcolor=color.new(color.gray, 80))
-
-var string action = na
-if enterLong
-    action := "Long Entry"
-if enterShort
-    action := "Short Entry"
-if exitLong
-    action := "Long Exit"
-if exitShort
-    action := "Short Exit"
-
-if enterLong or enterShort or exitLong or exitShort
-    table.cell(tradesLog, bar_index + 1, 0, str.tostring(time))
-    table.cell(tradesLog, bar_index + 1, 1, action)
-    table.cell(tradesLog, bar_index + 1, 2, str.tostring(close))
-    table.cell(tradesLog, bar_index + 1, 3, "Dynamic Quantity Removed")
+// Plot reverse signals
+plotshape(series=newReverseLong, title="Reverse Enter Long", style=shape.labelup, location=location.belowbar, color=color.green, text="Rev Buy")
+plotshape(series=reverseExitLong, title="Reverse Exit Long", style=shape.labeldown, location=location.abovebar, color=color.red, text="Rev Sell")
+plotshape(series=newReverseShort, title="Reverse Enter Short", style=shape.labeldown, location=location.abovebar, color=color.orange, text="Rev Sell")
+plotshape(series=reverseExitShort, title="Reverse Exit Short", style=shape.labelup, location=location.belowbar, color=color.purple, text="Rev Buy")
