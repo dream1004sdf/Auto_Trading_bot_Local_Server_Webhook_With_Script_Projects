@@ -1,0 +1,174 @@
+//@version=6
+strategy('Scalping Multi-Symbol Strategy', overlay = true)
+
+// Webhook Parameters
+api_key = '122333444'
+api_secret = '1233454567'
+exchange = 'GDAX'
+symbol = 'GDAX_USD_' + syminfo.basecurrency
+
+// Backtesting Parameters
+useCustomDates = input.bool(false, 'Use Custom Dates')
+customStartDate = input.time(timestamp('2024-12-01 00:00:00'), 'Custom Start Date')
+customEndDate = input.time(timestamp('2024-12-22 23:59:59'), 'Custom End Date')
+rollingPeriodMinutes = input.int(3 * 24 * 60, 'Rolling Period (minutes)')
+defaultBacktestStart = timenow - rollingPeriodMinutes * 60 * 1000
+backtestStart = useCustomDates ? customStartDate : defaultBacktestStart
+backtestEnd = useCustomDates ? customEndDate : timenow
+
+inTestingRange = (time >= backtestStart and time <= backtestEnd)
+
+// Custom EMA function
+f_dynamic_ema(src, dynamicLength) =>
+    var float prevEma = na
+    alpha = 2 / (dynamicLength + 1)
+    prevEma := na(prevEma[1]) ? src : alpha * src + (1 - alpha) * prevEma[1]
+    prevEma
+
+// Slippage calculation based on market data
+slippagePercent = ta.stdev(close, 20) / close * 100  // Dynamic slippage calculation as a percentage
+slippageMultiplier = 1 + slippagePercent / 100
+
+// Tight stop-loss and take-profit multiplier for scalping
+scalpingMultiplier = 0.5
+
+// Function to calculate Stochastic Oscillator
+f_calc_stochastic(src, highInput, lowInput, length) =>
+    k = ta.stoch(close, highInput, lowInput, length)
+    d = ta.sma(k, 3)
+    [k, d]
+
+// Function to calculate RSI
+f_rsi(src, length) =>
+    rsi = ta.rsi(src, length)
+    rsi
+
+// Function to calculate Supertrend
+f_supertrend(length, multiplier) =>
+    [supertrend, direction] = ta.supertrend(length, multiplier)
+    [supertrend, direction]
+
+// Adding VWAP, RSI, Supertrend, and Stochastic Oscillator for each symbol
+DOGEUSD = request.security('COINBASE:DOGEUSD', '1', close)
+DOGEVWAP = ta.vwap(DOGEUSD)
+DOGERSI = f_rsi(DOGEUSD, 14)
+[DOGESupertrend, DOGEDirection] = f_supertrend(10, 2)
+[DOGEK, DOGED] = f_calc_stochastic(DOGEUSD, ta.highest(DOGEUSD, 14), ta.lowest(DOGEUSD, 14), 14)
+DOGEStopLoss = ta.lowest(DOGEUSD, 10) * slippageMultiplier
+DOGETakeProfit = ta.highest(DOGEUSD, 10) * slippageMultiplier
+
+// DOGEUSD Trading Logic
+if inTestingRange and DOGERSI > 30 and DOGERSI < 70 and DOGEVWAP > DOGEUSD
+    if DOGEUSD > DOGESupertrend and DOGERSI > 50 and DOGEK > 20 and DOGED > 20
+        strategy.entry('DOGEUSD Long', strategy.long)
+        strategy.exit('DOGEUSD Long Exit', from_entry = 'DOGEUSD Long', stop = DOGEStopLoss, limit = DOGETakeProfit)
+        alert('Bought DOGEUSD at ' + str.tostring(DOGEUSD) + ', Limit Price: ' + str.tostring(DOGETakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+    if DOGEUSD < DOGESupertrend and DOGERSI < 50 and DOGEK < 80 and DOGED < 80
+        strategy.entry('DOGEUSD Short', strategy.short)
+        strategy.exit('DOGEUSD Short Exit', from_entry = 'DOGEUSD Short', stop = DOGEStopLoss, limit = DOGETakeProfit)
+        alert('Sold DOGEUSD at ' + str.tostring(DOGEUSD) + ', Limit Price: ' + str.tostring(DOGETakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+
+// Plots for DOGEUSD
+plot(DOGEVWAP, title = "DOGEUSD VWAP", color = color.blue, linewidth = 1)
+plot(DOGERSI, title = "DOGEUSD RSI", color = color.purple, linewidth = 1)
+plot(DOGESupertrend, title = "DOGEUSD Supertrend", color = color.green, linewidth = 1)
+plot(DOGEK, title = "DOGEUSD Stochastic K", color = color.purple, linewidth = 1)
+plot(DOGED, title = "DOGEUSD Stochastic D", color = color.yellow, linewidth = 1)
+
+// Repeat logic for SOLUSD
+SOLUSD = request.security('COINBASE:SOLUSD', '1', close)
+SOLVWAP = ta.vwap(SOLUSD)
+SOLRSI = f_rsi(SOLUSD, 14)
+[SOLSupertrend, SOLDirection] = f_supertrend(10, 2)
+[SOLK, SOLD] = f_calc_stochastic(SOLUSD, ta.highest(SOLUSD, 14), ta.lowest(SOLUSD, 14), 14)
+SOLStopLoss = ta.lowest(SOLUSD, 10) * slippageMultiplier
+SOLTakeProfit = ta.highest(SOLUSD, 10) * slippageMultiplier
+
+if inTestingRange and SOLRSI > 30 and SOLRSI < 70 and SOLVWAP > SOLUSD
+    if SOLUSD > SOLSupertrend and SOLRSI > 50 and SOLK > 20 and SOLD > 20
+        strategy.entry('SOLUSD Long', strategy.long)
+        strategy.exit('SOLUSD Long Exit', from_entry = 'SOLUSD Long', stop = SOLStopLoss, limit = SOLTakeProfit)
+        alert('Bought SOLUSD at ' + str.tostring(SOLUSD) + ', Limit Price: ' + str.tostring(SOLTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+    if SOLUSD < SOLSupertrend and SOLRSI < 50 and SOLK < 80 and SOLD < 80
+        strategy.entry('SOLUSD Short', strategy.short)
+        strategy.exit('SOLUSD Short Exit', from_entry = 'SOLUSD Short', stop = SOLStopLoss, limit = SOLTakeProfit)
+        alert('Sold SOLUSD at ' + str.tostring(SOLUSD) + ', Limit Price: ' + str.tostring(SOLTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+
+plot(SOLVWAP, title = "SOLUSD VWAP", color = color.blue, linewidth = 1)
+plot(SOLRSI, title = "SOLUSD RSI", color = color.purple, linewidth = 1)
+plot(SOLSupertrend, title = "SOLUSD Supertrend", color = color.green, linewidth = 1)
+plot(SOLK, title = "SOLUSD Stochastic K", color = color.purple, linewidth = 1)
+plot(SOLD, title = "SOLUSD Stochastic D", color = color.yellow, linewidth = 1)
+
+// Repeat similar logic for BTCUSD, ETHUSD, and ATOMUSD
+BTCUSD = request.security('COINBASE:BTCUSD', '1', close)
+BTCVWAP = ta.vwap(BTCUSD)
+BTCRSI = f_rsi(BTCUSD, 14)
+[BTCSupertrend, BTCDirection] = f_supertrend(10, 2)
+[BTCK, BTCD] = f_calc_stochastic(BTCUSD, ta.highest(BTCUSD, 14), ta.lowest(BTCUSD, 14), 14)
+BTCStopLoss = ta.lowest(BTCUSD, 10) * slippageMultiplier
+BTCTakeProfit = ta.highest(BTCUSD, 10) * slippageMultiplier
+
+if inTestingRange and BTCRSI > 30 and BTCRSI < 70 and BTCVWAP > BTCUSD
+    if BTCUSD > BTCSupertrend and BTCRSI > 50 and BTCK > 20 and BTCD > 20
+        strategy.entry('BTCUSD Long', strategy.long)
+        strategy.exit('BTCUSD Long Exit', from_entry = 'BTCUSD Long', stop = BTCStopLoss, limit = BTCTakeProfit)
+        alert('Bought BTCUSD at ' + str.tostring(BTCUSD) + ', Limit Price: ' + str.tostring(BTCTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+    if BTCUSD < BTCSupertrend and BTCRSI < 50 and BTCK < 80 and BTCD < 80
+        strategy.entry('BTCUSD Short', strategy.short)
+        strategy.exit('BTCUSD Short Exit', from_entry = 'BTCUSD Short', stop = BTCStopLoss, limit = BTCTakeProfit)
+        alert('Sold BTCUSD at ' + str.tostring(BTCUSD) + ', Limit Price: ' + str.tostring(BTCTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+
+plot(BTCVWAP, title = "BTCUSD VWAP", color = color.blue, linewidth = 1)
+plot(BTCRSI, title = "BTCUSD RSI", color = color.purple, linewidth = 1)
+plot(BTCSupertrend, title = "BTCUSD Supertrend", color = color.green, linewidth = 1)
+plot(BTCK, title = "BTCUSD Stochastic K", color = color.purple, linewidth = 1)
+plot(BTCD, title = "BTCUSD Stochastic D", color = color.yellow, linewidth = 1)
+
+ETHUSD = request.security('COINBASE:ETHUSD', '1', close)
+ETHVWAP = ta.vwap(ETHUSD)
+ETHRSI = f_rsi(ETHUSD, 14)
+[ETHSupertrend, ETHDirection] = f_supertrend(10, 2)
+[ETHK, ETHD] = f_calc_stochastic(ETHUSD, ta.highest(ETHUSD, 14), ta.lowest(ETHUSD, 14), 14)
+ETHStopLoss = ta.lowest(ETHUSD, 10) * slippageMultiplier
+ETHTakeProfit = ta.highest(ETHUSD, 10) * slippageMultiplier
+
+if inTestingRange and ETHRSI > 30 and ETHRSI < 70 and ETHVWAP > ETHUSD
+    if ETHUSD > ETHSupertrend and ETHRSI > 50 and ETHK > 20 and ETHD > 20
+        strategy.entry('ETHUSD Long', strategy.long)
+        strategy.exit('ETHUSD Long Exit', from_entry = 'ETHUSD Long', stop = ETHStopLoss, limit = ETHTakeProfit)
+        alert('Bought ETHUSD at ' + str.tostring(ETHUSD) + ', Limit Price: ' + str.tostring(ETHTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+    if ETHUSD < ETHSupertrend and ETHRSI < 50 and ETHK < 80 and ETHD < 80
+        strategy.entry('ETHUSD Short', strategy.short)
+        strategy.exit('ETHUSD Short Exit', from_entry = 'ETHUSD Short', stop = ETHStopLoss, limit = ETHTakeProfit)
+        alert('Sold ETHUSD at ' + str.tostring(ETHUSD) + ', Limit Price: ' + str.tostring(ETHTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+
+plot(ETHVWAP, title = "ETHUSD VWAP", color = color.blue, linewidth = 1)
+plot(ETHRSI, title = "ETHUSD RSI", color = color.purple, linewidth = 1)
+plot(ETHSupertrend, title = "ETHUSD Supertrend", color = color.green, linewidth = 1)
+plot(ETHK, title = "ETHUSD Stochastic K", color = color.purple, linewidth = 1)
+plot(ETHD, title = "ETHUSD Stochastic D", color = color.yellow, linewidth = 1)
+
+ATOMUSD = request.security('COINBASE:ATOMUSD', '1', close)
+ATOMVWAP = ta.vwap(ATOMUSD)
+ATOMRSI = f_rsi(ATOMUSD, 14)
+[ATOMSupertrend, ATOMDirection] = f_supertrend(10, 2)
+[ATOMK, ATOMD] = f_calc_stochastic(ATOMUSD, ta.highest(ATOMUSD, 14), ta.lowest(ATOMUSD, 14), 14)
+ATOMStopLoss = ta.lowest(ATOMUSD, 10) * slippageMultiplier
+ATOMTakeProfit = ta.highest(ATOMUSD, 10) * slippageMultiplier
+
+if inTestingRange and ATOMRSI > 30 and ATOMRSI < 70 and ATOMVWAP > ATOMUSD
+    if ATOMUSD > ATOMSupertrend and ATOMRSI > 50 and ATOMK > 20 and ATOMD > 20
+        strategy.entry('ATOMUSD Long', strategy.long)
+        strategy.exit('ATOMUSD Long Exit', from_entry = 'ATOMUSD Long', stop = ATOMStopLoss, limit = ATOMTakeProfit)
+        alert('Bought ATOMUSD at ' + str.tostring(ATOMUSD) + ', Limit Price: ' + str.tostring(ATOMTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+    if ATOMUSD < ATOMSupertrend and ATOMRSI < 50 and ATOMK < 80 and ATOMD < 80
+        strategy.entry('ATOMUSD Short', strategy.short)
+        strategy.exit('ATOMUSD Short Exit', from_entry = 'ATOMUSD Short', stop = ATOMStopLoss, limit = ATOMTakeProfit)
+        alert('Sold ATOMUSD at ' + str.tostring(ATOMUSD) + ', Limit Price: ' + str.tostring(ATOMTakeProfit) + ', Quantity: ' + str.tostring(strategy.position_size), alert.freq_once_per_bar_close)
+
+plot(ATOMVWAP, title = "ATOMUSD VWAP", color = color.blue, linewidth = 1)
+plot(ATOMRSI, title = "ATOMUSD RSI", color = color.purple, linewidth = 1)
+plot(ATOMSupertrend, title = "ATOMUSD Supertrend", color = color.green, linewidth = 1)
+plot(ATOMK, title = "ATOMUSD Stochastic K", color = color.purple, linewidth = 1)
+plot(ATOMD, title = "ATOMUSD Stochastic D", color = color.yellow, linewidth = 1)
