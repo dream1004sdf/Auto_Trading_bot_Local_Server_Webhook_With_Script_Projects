@@ -1,0 +1,81 @@
+//@version=5
+strategy("Enhanced Modular Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=2)
+
+// Parameters
+emaShortPeriod = 9
+emaLongPeriod = 21
+atrPeriod = 14
+volumeMultiplier = 1.5
+lookbackMinutes = 3 * 1440  // Rolling 3-day period in minutes
+
+// Webhook Parameters
+api_key = "baa63376-ccd3-42f5-8da6-96c5e44d203f"
+api_secret = "4b6f7ed8-f468-44e3-889f-180cd87130ed"
+exchange = "GDAX"
+symbol = "GDAX_USD_" + syminfo.basecurrency
+
+// Dynamic Indicators
+emaShort = ta.ema(close, emaShortPeriod)
+emaLong = ta.ema(close, emaLongPeriod)
+atrValue = ta.atr(atrPeriod)
+
+// Helper Function for Webhook
+alert_webhook(api_key, api_secret, exchange, symbol, action, side, quantity) =>
+    alert('{ "api_key": "' + api_key + '", "api_secret": "' + api_secret + '", "exchange": "' + exchange + '", "symbol": "' + symbol + '", "action": "' + action + '", "side": "' + side + '", "quantity": ' + str.tostring(quantity) + ' }', alert.freq_once_per_bar)
+
+// Strategy 1: EMA Crossover with Volume Filter
+strategy_ema_crossover(volumeMultiplier) =>
+    longCondition = ta.crossover(emaShort, emaLong) and volume > ta.sma(volume, atrPeriod) * volumeMultiplier
+    shortCondition = ta.crossunder(emaShort, emaLong) and volume > ta.sma(volume, atrPeriod) * volumeMultiplier
+    [longCondition, shortCondition]
+
+// Strategy 2: ATR-Based Reversal
+strategy_atr_reversal(atrMultiplier) =>
+    longCondition = close < close[1] - (atrMultiplier * atrValue)
+    shortCondition = close > close[1] + (atrMultiplier * atrValue)
+    [longCondition, shortCondition]
+
+// Strategy 3: Rolling High/Low Breakout
+strategy_breakout(lookbackMinutes) =>
+    startTime = timenow - (lookbackMinutes * 60 * 1000)
+    var float rollingHigh = na
+    var float rollingLow = na
+    if (bar_index == 0)
+        rollingHigh := high
+        rollingLow := low
+    if time >= startTime
+        rollingHigh := math.max(rollingHigh, high)
+        rollingLow := math.min(rollingLow, low)
+    longCondition = close > rollingHigh
+    shortCondition = close < rollingLow
+    [longCondition, shortCondition]
+
+// Apply Strategies
+[longCondition1, shortCondition1] = strategy_ema_crossover(volumeMultiplier)
+[longCondition2, shortCondition2] = strategy_atr_reversal(2)
+[longCondition3, shortCondition3] = strategy_breakout(lookbackMinutes)
+
+// Combine Conditions
+longCondition = longCondition1 or longCondition2 or longCondition3
+shortCondition = shortCondition1 or shortCondition2 or shortCondition3
+
+// Webhook Alerts for Combined Strategies
+dynamicQuantity = (atrValue / close) * 100  // Example: Adjust quantity based on ATR
+if (longCondition)
+    alert_webhook(api_key, api_secret, exchange, symbol, "open", "long", dynamicQuantity)
+if (shortCondition)
+    alert_webhook(api_key, api_secret, exchange, symbol, "open", "short", dynamicQuantity)
+
+// Strategy Execution
+if (longCondition)
+    strategy.entry("Long", strategy.long, comment="Long Entry")
+if (shortCondition)
+    strategy.entry("Short", strategy.short, comment="Short Entry")
+
+// Strategy Tester Integration
+strategy.exit("Exit Long", from_entry="Long", stop=low - atrValue, limit=high + atrValue)
+strategy.exit("Exit Short", from_entry="Short", stop=high + atrValue, limit=low - atrValue)
+
+// Visual Reference
+plot(emaShort, color=color.blue, title="EMA Short")
+plot(emaLong, color=color.orange, title="EMA Long")
