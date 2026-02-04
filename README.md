@@ -1,4 +1,4 @@
-# TradingView → Flask → Coinbase Automation Server
+# TradingView → Flask → Brokerages Automation Server
 
 This project exposes a Flask server that:
 
