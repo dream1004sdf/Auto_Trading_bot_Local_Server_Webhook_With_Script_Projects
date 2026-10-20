@@ -1,0 +1,23 @@
+# Credentials and private account data
+.env
+.env.*
+!.env.example
+Key.env
+*.pem
+*.key
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.log
+
+# Python and editors
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.vscode/
+.idea/
+.DS_Store
