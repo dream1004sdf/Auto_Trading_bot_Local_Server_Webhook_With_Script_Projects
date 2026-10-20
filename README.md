@@ -4,7 +4,7 @@
 
 A portfolio-focused refactoring of my original **2024–2025 personal trading automation prototype**. It demonstrates building an HTTP backend for external trading alerts, validating structured JSON, calculating technical indicators, and recording events in an optional time-series database. The source also includes historical TradingView Pine Script strategy experiments.
 
-[![Python tests](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml/badge.svg?branch=portfolio%2Fcleanup-trading-automation-2026)](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml)
+[![Python tests](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml/badge.svg?branch=Main)](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml)
 
 > **Safety and scope:** This is a local demonstration and software-engineering portfolio, **not a production trading system**. All orders are simulated. Live brokerage authentication/order placement and real account access are intentionally disabled. No profitability or production-readiness claims are made.
 
@@ -55,7 +55,9 @@ For endpoint behavior, code walkthrough and design trade-offs, see **[Source cod
 
 ## Run on Windows (PowerShell)
 
-Use an isolated Python virtual environment. The project is **verified on Python 3.11** in CI; see the [CI matrix](docs/TESTING.md) for any additional verified versions.
+**Convenience setup:** Review [`scripts/setup_windows.ps1`](scripts/setup_windows.ps1) and run `powershell -ExecutionPolicy Bypass -File .\\scripts\\setup_windows.ps1` from the repository folder. The script selects an installed Python 3.12 or 3.11 interpreter, creates a project-only `.venv`, installs Flask and other dependencies, reports versions and runs tests. It does not change the system-wide Python environment. **You must run this on your own PC; GitHub cannot install software onto your computer.**
+
+**Manual setup:** Use an isolated Python virtual environment. The project is **verified on Python 3.11** in CI; see the [CI matrix](docs/TESTING.md) for any additional verified versions.
 
 ```powershell
 py -0p                           # List installed Python interpreters
