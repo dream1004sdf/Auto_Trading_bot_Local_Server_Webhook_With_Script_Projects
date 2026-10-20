@@ -11,11 +11,20 @@ This page records verifiable test runs instead of estimated performance claims. 
 - **Result:** **10 passed in 0.47s** (GitHub Actions log, October 19, 2026 U.S. Eastern / October 20 UTC)
 - **Scope:** Earlier initial suite. This is not a result for the expanded test file or Windows matrix.
 
-## Expanded CI matrix
+## Verified expanded cross-platform test run
 
-The workflow now targets **Windows and Ubuntu** with **Python 3.11 and 3.12**, and includes source compilation and the expanded pytest suite. **Do not represent these checks as successful until the new CI runs are visible and complete.**
+The expanded suite contains **20 tests** and the new CI matrix runs it in **four distinct environments**, totaling **80 successful test executions** in the referenced run.
 
-Latest workflow page: [GitHub Actions](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml)
+**Evidence:** [GitHub Actions run #39346110321](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/runs/39346110321). Each job ran `python -m py_compile Server.py` and `python -m pytest -q`; all jobs concluded **success**.
+
+| Runner | CPython | pytest summary | Outcome |
+| --- | --- | --- | --- |
+| Ubuntu Linux | 3.11.17 | 20 passed in 0.51s | Success |
+| Ubuntu Linux | 3.12.15 | 20 passed in 0.46s | Success |
+| Windows | 3.11.9 | 20 passed in 0.58s | Success |
+| Windows | 3.12.10 | 20 passed in 0.67s | Success |
+
+The exact results above describe a completed CI snapshot; they are **not a claim about future builds**. The current status is available on the [GitHub Actions workflow page](https://github.com/dream1004sdf/Auto_Trading_bot_Local_Server_Webhook_With_Script_Projects/actions/workflows/tests.yml).
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
