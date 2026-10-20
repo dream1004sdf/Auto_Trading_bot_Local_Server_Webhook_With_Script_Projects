@@ -1,255 +1,269 @@
-from flask import Flask, request, jsonify
-import os
-import requests
+"""Portfolio-safe TradingView webhook and technical indicator service.
+
+Real brokerage orders are deliberately NOT supported in this public demo.
+The historical experiments remain accessible through repository history.
+"""
+from __future__ import annotations
+
+import hmac
 import json
-from datetime import datetime
-from influxdb import InfluxDBClient
+import math
+import os
+import re
+from datetime import datetime, timezone
+from typing import Any
+
 import pandas as pd
-import numpy as np
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024
 
-# =========================
-# Configuration (from env)
-# =========================
+DEFAULT_PARAMS = {
+    "RSI_Length": 14,
+    "Bollinger_Bands_Length": 20,
+    "Bollinger_Bands_Multiplier": 2.0,
+    "ATR_Length": 14,
+    "Supertrend_ATR_Length": 10,
+    "Supertrend_ATR_Multiplier": 3.0,
+}
+SENSITIVE_FIELDS = {"token", "api_key", "api_secret", "password", "secret", "authorization"}
 
-INFLUXDB_HOST = os.getenv("INFLUXDB_HOST", "localhost")
-INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", "8086"))
-INFLUXDB_DATABASE = os.getenv("INFLUXDB_DATABASE", "trading_data")
 
-COINBASE_API_BASE = "https://api.coinbase.com/v3"
-COINBASE_API_KEY = os.getenv("COINBASE_API_KEY")          
-COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET")    
-WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN")               
+def env_flag(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"true", "1", "yes"}
 
-# Demo Mode
-DEMO_MODE = os.getenv("DEMO_MODE", "true").lower() == "true"
 
-# =========================
-# InfluxDB Client
-# =========================
-
-client = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT)
-client.switch_database(INFLUXDB_DATABASE)
-
-# =========================
-# Helper functions
-# =========================
-
-def fetch_trading_data():
-    """Bring Coinbase Crypto Pair Data"""
-    if not COINBASE_API_KEY:
-        app.logger.warning("COINBASE_API_KEY not set.")
-        return None
-
+def clean_number(value: Any) -> float | None:
     try:
-        response = requests.get(
-            f"{COINBASE_API_BASE}/products",
-            headers={"Authorization": f"Bearer {COINBASE_API_KEY}"}
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"Error fetching trading data: {e}")
+        result = float(value)
+    except (ValueError, TypeError):
         return None
+    return result if math.isfinite(result) else None
 
 
-def calculate_rsi(data, length):
-    delta = data["close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=length).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=length).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def calculate_rsi(data: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Simple-moving-average RSI, as in the original prototype."""
+    change = data["close"].diff()
+    gain = change.clip(lower=0).rolling(length, min_periods=length).mean()
+    loss = (-change.clip(upper=0)).rolling(length, min_periods=length).mean()
+    ratio = gain / loss.replace(0, float("nan"))
+    rsi = 100 - 100 / (1 + ratio)
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100.0)
+    return rsi.mask((loss == 0) & (gain == 0), 50.0)
 
 
-def calculate_bollinger_bands(data, length, multiplier):
-    ma = data["close"].rolling(window=length).mean()
-    std = data["close"].rolling(window=length).std()
-    upper_band = ma + (multiplier * std)
-    lower_band = ma - (multiplier * std)
-    return upper_band, lower_band
+def calculate_bollinger_bands(data: pd.DataFrame, length: int = 20, multiplier: float = 2.0):
+    center = data["close"].rolling(length, min_periods=length).mean()
+    deviation = data["close"].rolling(length, min_periods=length).std()
+    return center + multiplier * deviation, center - multiplier * deviation
 
 
-def calculate_atr(data, length):
-    high_low = data["high"] - data["low"]
-    high_close = np.abs(data["high"] - data["close"].shift())
-    low_close = np.abs(data["low"] - data["close"].shift())
-    tr = high_low.combine(high_close, max).combine(low_close, max)
-    atr = tr.rolling(window=length).mean()
-    return atr
+def calculate_atr(data: pd.DataFrame, length: int = 14) -> pd.Series:
+    """Simple-moving-average ATR."""
+    previous_close = data["close"].shift()
+    ranges = pd.concat([
+        data["high"] - data["low"],
+        (data["high"] - previous_close).abs(),
+        (data["low"] - previous_close).abs(),
+    ], axis=1).max(axis=1)
+    return ranges.rolling(length, min_periods=length).mean()
 
 
-def calculate_supertrend(data, atr_length, multiplier):
-    atr = calculate_atr(data, atr_length)
-    hl2 = (data["high"] + data["low"]) / 2
-    upper_band = hl2 + (multiplier * atr)
-    lower_band = hl2 - (multiplier * atr)
-    return upper_band, lower_band
+def calculate_supertrend_bands(data: pd.DataFrame, length: int = 10, multiplier: float = 3.0):
+    """Basic ATR bands ONLY, not a complete trend-switching Supertrend indicator."""
+    atr = calculate_atr(data, length)
+    midpoint = (data["high"] + data["low"]) / 2
+    return midpoint + multiplier * atr, midpoint - multiplier * atr
 
 
-def calculate_strategies_dynamic(params):
-    query = "SELECT * FROM trading_metrics WHERE time > now() - 3d"
-    results = client.query(query)
-    points = list(results.get_points())
-    df = pd.DataFrame(points)
-
-    if df.empty:
+def calculate_indicators(data: pd.DataFrame, params: dict[str, Any] | None = None):
+    if data.empty or not {"high", "low", "close"}.issubset(data.columns):
         return {}
-
-    rsi = calculate_rsi(df, length=params.get("RSI_Length", 14))
+    values = DEFAULT_PARAMS | (params or {})
+    for key in ("RSI_Length", "Bollinger_Bands_Length", "ATR_Length", "Supertrend_ATR_Length"):
+        if not isinstance(values[key], int) or isinstance(values[key], bool) or not 1 <= values[key] <= 500:
+            raise ValueError(f"Invalid period: {key}")
+    for key in ("Bollinger_Bands_Multiplier", "Supertrend_ATR_Multiplier"):
+        value = clean_number(values[key])
+        if value is None or not 0 < value <= 100:
+            raise ValueError(f"Invalid multiplier: {key}")
+        values[key] = value
+    data = data.copy()
+    if "time" in data.columns:
+        data = data.sort_values("time")
+    for column in ("high", "low", "close"):
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    data = data.dropna(subset=["high", "low", "close"])
+    if data.empty:
+        return {}
+    rsi = calculate_rsi(data, values["RSI_Length"])
     upper_bb, lower_bb = calculate_bollinger_bands(
-        df,
-        length=params.get("Bollinger_Bands_Length", 20),
-        multiplier=params.get("Bollinger_Bands_Multiplier", 2),
+        data, values["Bollinger_Bands_Length"], values["Bollinger_Bands_Multiplier"]
     )
-    atr = calculate_atr(df, length=params.get("ATR_Length", 14))
-    upper_st, lower_st = calculate_supertrend(
-        df,
-        atr_length=params.get("Supertrend_ATR_Length", 10),
-        multiplier=params.get("Supertrend_ATR_Multiplier", 3),
+    atr = calculate_atr(data, values["ATR_Length"])
+    upper_st, lower_st = calculate_supertrend_bands(
+        data, values["Supertrend_ATR_Length"], values["Supertrend_ATR_Multiplier"]
     )
-
-    strategies = {
-        "RSI": rsi.iloc[-1] if not rsi.empty else None,
-        "BB_Upper": upper_bb.iloc[-1] if not upper_bb.empty else None,
-        "BB_Lower": lower_bb.iloc[-1] if not lower_bb.empty else None,
-        "ATR": atr.iloc[-1] if not atr.empty else None,
-        "Supertrend_Upper": upper_st.iloc[-1] if not upper_st.empty else None,
-        "Supertrend_Lower": lower_st.iloc[-1] if not lower_st.empty else None,
+    return {
+        "RSI": clean_number(rsi.iloc[-1]),
+        "BB_Upper": clean_number(upper_bb.iloc[-1]),
+        "BB_Lower": clean_number(lower_bb.iloc[-1]),
+        "ATR": clean_number(atr.iloc[-1]),
+        "Supertrend_Band_Upper": clean_number(upper_st.iloc[-1]),
+        "Supertrend_Band_Lower": clean_number(lower_st.iloc[-1]),
     }
-    return strategies
 
 
-def verify_webhook_secret(payload: dict) -> bool:
+def influx_enabled() -> bool:
+    return env_flag("INFLUXDB_ENABLED")
 
-    if not WEBHOOK_TOKEN:
+
+def get_influx_client():
+    """Connect to InfluxDB 1.x only when explicitly enabled."""
+    from influxdb import InfluxDBClient
+    client = InfluxDBClient(
+        host=os.getenv("INFLUXDB_HOST", "localhost"),
+        port=int(os.getenv("INFLUXDB_PORT", "8086")),
+        timeout=3,
+    )
+    database = os.getenv("INFLUXDB_DATABASE", "trading_data")
+    names = {item["name"] for item in client.get_list_database()}
+    if database not in names:
+        client.create_database(database)
+    client.switch_database(database)
+    return client
+
+
+def query_indicators(client):
+    """OHLC measurement is supplied separately, not inferred from webhook signals."""
+    rows = list(client.query(
+        "SELECT time,high,low,close FROM trading_metrics "
+        "WHERE time > now() - 3d ORDER BY time ASC"
+    ).get_points())
+    return calculate_indicators(pd.DataFrame(rows))
+
+
+def verify_webhook_token(payload: dict[str, Any]) -> bool:
+    configured = os.getenv("WEBHOOK_TOKEN", "")
+    if not configured:
+        # Convenient for localhost demonstration; unsafe on the public internet.
         return True
-    return payload.get("token") == WEBHOOK_TOKEN
+    supplied = request.headers.get("X-Webhook-Token") or payload.get("token", "")
+    return isinstance(supplied, str) and hmac.compare_digest(supplied, configured)
 
-# =========================
-# Routes
-# =========================
 
-@app.route("/webhook", methods=["POST"])
-def handle_webhook():
-    payload = request.json
-    if not payload:
-        return jsonify({"error": "Invalid payload"}), 400
+def safe_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Exclude credentials and transform nested payloads into database-safe fields."""
+    fields = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or key.lower() in SENSITIVE_FIELDS:
+            continue
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", key):
+            continue
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        elif not isinstance(value, (str, bool, int, float)):
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        fields[key] = value
+    return fields
 
-    # Verify Webhook 
-    if not verify_webhook_secret(payload):
-        app.logger.warning("Invalid webhook token")
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "demo_mode": True, "influxdb_enabled": influx_enabled()})
+
+
+@app.post("/webhook")
+def webhook():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not payload:
+        return jsonify({"error": "Expected a nonempty JSON object"}), 400
+    if not verify_webhook_token(payload):
         return jsonify({"error": "Unauthorized"}), 401
-
-    # Log payload to InfluxDB
-    timestamp = datetime.utcnow().isoformat()
-    json_body = [
-        {
+    fields = safe_fields(payload)
+    if not fields:
+        return jsonify({"error": "No safe event fields provided"}), 400
+    if not influx_enabled():
+        return jsonify({
+            "status": "accepted", "stored": False, "mode": "demo",
+            "message": "InfluxDB disabled; event validated but not persisted",
+            "indicators": {},
+        }), 200
+    try:
+        client = get_influx_client()
+        client.write_points([{
             "measurement": "webhook_data",
             "tags": {"source": "tradingview"},
-            "time": timestamp,
-            "fields": payload,
-        }
-    ]
-    client.write_points(json_body)
-
-    strategies = calculate_strategies_dynamic(payload)
-
-    return jsonify({"status": "success", "strategies": strategies}), 200
-
-
-@app.route("/wallet", methods=["GET"])
-def get_wallet_info():
-    if not COINBASE_API_KEY:
-        return jsonify({"error": "COINBASE_API_KEY not configured"}), 500
-
-    url = f"{COINBASE_API_BASE}/accounts"
-    headers = {
-        "Authorization": f"Bearer {COINBASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        return jsonify(response.json()), 200
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"Error fetching wallet information: {e}")
-        return jsonify({"error": "Unable to fetch wallet information"}), 500
+            "time": datetime.now(timezone.utc).isoformat(),
+            "fields": fields,
+        }])
+        indicators = query_indicators(client)
+    except Exception:
+        app.logger.exception("Webhook persistence or indicator calculation failed")
+        return jsonify({"error": "Data service unavailable"}), 503
+    return jsonify({"status": "accepted", "stored": True, "mode": "demo", "indicators": indicators}), 200
 
 
-@app.route("/trade", methods=["POST"])
-def place_limit_trade():
-    payload = request.json
-    if not payload:
-        return jsonify({"error": "Invalid payload"}), 400
-
-    side = payload.get("side")  # buy or sell
+@app.post("/trade")
+def trade():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
+    side = payload.get("side")
     product_id = payload.get("product_id", "BTC-USD")
-    size = payload.get("size", 0.01)
-    price = payload.get("price")
-
-    if not side or price is None:
-        return jsonify({"error": "Missing required fields: 'side' or 'price'"}), 400
-
-    order_payload = {
-        "side": side,
-        "product_id": product_id,
-        "size": size,
-        "price": price,
-        "type": "limit",
-    }
-
-    if DEMO_MODE:
-        # Only Log
-        app.logger.info(f"[DEMO_MODE] Order payload: {order_payload}")
-        return jsonify({"status": "demo", "order": order_payload}), 200
-
-    if not COINBASE_API_KEY:
-        return jsonify({"error": "COINBASE_API_KEY not configured"}), 500
-
-    url = f"{COINBASE_API_BASE}/orders"
-    headers = {
-        "Authorization": f"Bearer {COINBASE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(order_payload), timeout=10)
-        response.raise_for_status()
-        return jsonify(response.json()), 200
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"Error placing limit trade: {e}")
-        return jsonify({"error": "Unable to place limit trade"}), 500
+    size = clean_number(payload.get("size"))
+    price = clean_number(payload.get("price"))
+    if (
+        side not in {"buy", "sell"}
+        or not isinstance(product_id, str)
+        or not re.fullmatch(r"[A-Z0-9-]{3,30}", product_id)
+        or size is None or size <= 0
+        or price is None or price <= 0
+    ):
+        return jsonify({"error": "Valid side (buy/sell), product_id, size, and price required"}), 400
+    # Deliberately no network call to a brokerage.
+    return jsonify({
+        "status": "simulated", "live_order_submitted": False,
+        "order": {
+            "side": side, "product_id": product_id,
+            "size": size, "price": price, "type": "limit",
+        },
+    }), 200
 
 
-@app.route("/update_strategies", methods=["GET"])
+@app.get("/wallet")
+def wallet():
+    return jsonify({"error": "Live account access is not supported in the public demo"}), 501
+
+
+@app.get("/update_strategies")
 def update_strategies():
-    default_params = {
-        "RSI_Length": 14,
-        "Bollinger_Bands_Length": 20,
-        "Bollinger_Bands_Multiplier": 2,
-        "ATR_Length": 14,
-        "Supertrend_ATR_Length": 10,
-        "Supertrend_ATR_Multiplier": 3,
-    }
-    strategies = calculate_strategies_dynamic(default_params)
-    timestamp = datetime.utcnow().isoformat()
-
-    json_body = [
-        {
-            "measurement": "trading_strategies",
-            "time": timestamp,
-            "fields": strategies,
-        }
-    ]
-    client.write_points(json_body)
-
-    return jsonify({"status": "updated", "strategies": strategies}), 200
+    if not influx_enabled():
+        return jsonify({"error": "Enable InfluxDB and supply trading_metrics data"}), 503
+    try:
+        client = get_influx_client()
+        indicators = query_indicators(client)
+        clean = {k: v for k, v in indicators.items() if v is not None}
+        if clean:
+            client.write_points([{
+                "measurement": "trading_strategies",
+                "time": datetime.now(timezone.utc).isoformat(),
+                "fields": clean,
+            }])
+    except Exception:
+        app.logger.exception("Indicator refresh failed")
+        return jsonify({"error": "Data service unavailable"}), 503
+    return jsonify({"status": "updated", "indicators": indicators}), 200
 
 
 if __name__ == "__main__":
-    databases = client.get_list_database()
-    if not any(db["name"] == INFLUXDB_DATABASE for db in databases):
-        client.create_database(INFLUXDB_DATABASE)
-
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    app.run(
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=False,
+    )
