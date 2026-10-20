@@ -1,9 +1,10 @@
+// HISTORICAL EXPERIMENT: Demo placeholder keys only. Never include actual credentials in TradingView scripts.
 //@version=6
 strategy('Scalping Multi-Symbol Strategy', overlay = true)
 
 // Webhook Parameters
-api_key = '122333444'
-api_secret = '1233454567'
+api_key = input.string("DEMO_KEY", "Webhook demo key (never paste real credentials)")
+api_secret = input.string("DEMO_SECRET", "Webhook demo secret (never paste real credentials)")
 exchange = 'GDAX'
 symbol = 'GDAX_USD_' + syminfo.basecurrency
 

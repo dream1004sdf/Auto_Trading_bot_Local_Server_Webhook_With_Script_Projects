@@ -1,3 +1,4 @@
+// HISTORICAL EXPERIMENT: Demo placeholder keys only. Never include actual credentials in TradingView scripts.
 //@version=5
 strategy("Enhanced Modular Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=2)
 
@@ -9,8 +10,8 @@ volumeMultiplier = 1.5
 lookbackMinutes = 3 * 1440  // Rolling 3-day period in minutes
 
 // Webhook Parameters
-api_key = "baa63376-ccd3-42f5-8da6-96c5e44d203f"
-api_secret = "4b6f7ed8-f468-44e3-889f-180cd87130ed"
+api_key = input.string("DEMO_KEY", "Webhook demo key (never paste real credentials)")
+api_secret = input.string("DEMO_SECRET", "Webhook demo secret (never paste real credentials)")
 exchange = "GDAX"
 symbol = "GDAX_USD_" + syminfo.basecurrency
 
