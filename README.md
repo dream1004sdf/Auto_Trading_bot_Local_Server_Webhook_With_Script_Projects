@@ -107,7 +107,7 @@ Five `.pinescript` files cover strategy ideas involving EMA crosses, RSI, Bollin
 1. Exchange auth and live orders are **not** supported. `/wallet` explicitly returns 501.
 2. Real InfluxDB server integration, historical Pine Script compilation and end-to-end TradingView connectivity are **not fully validated** by mocked unit tests.
 3. Webhook authentication is optional to ease localhost experimentation. **Do not** expose the development server publicly without appropriate security hardening.
-4. Removing old credentials from the latest files **does not scrub Git history**. Rotate any possibly exposed real secrets and consider a history-cleaned replacement repository before publicly sharing this as a portfolio.
+4. Removing old credentials from the latest files **does not scrub Git history**. See [SECURITY.md](SECURITY.md) for the identified historical exposure risk and instructions to rotate credentials or publish a clean-history copy before sharing this project as a portfolio.
 5. `/update_strategies` is retained as a legacy GET endpoint despite its persistence side effect; it should become POST in a future version.
 
 ## Recruiter notes
